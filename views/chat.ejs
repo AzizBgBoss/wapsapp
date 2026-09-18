@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title><%= title %> - WapsApp</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="header">
+        <%= title %>
+        <a href="/" style="color:#ffffff;float:right;">Back</a>
+    </div>
+
+    <div class="toolbar">
+        <div class="status live" id="statusBox">LIVE</div>
+        <button class="probebtn" id="probeBtn" onclick="probeNow()">Probe</button>
+        <a href="/chat/<%= chatId %>/search">Search</a>
+        <% if (isGroup) { %> | <a href="#" onclick="loadWho(); return false;">Who</a><% } %>
+    </div>
+    <div id="whoBox"></div>
+
+    <div id="seeMore" class="seemore"><a href="#" onclick="loadOlder(); return false;">See more above</a></div>
+
+    <div class="messages" id="messages">
+        <% messages.forEach(function(m) { %>
+            <div class="msg <%= m.fromMe ? 'out' : 'in' %>" data-ts="<%= m.timestamp %>">
+                <b><%= m.name %>:</b>
+                <%- m.text %>
+                <% if (m.hasMedia) { %>
+                    <% if (m.mediaType === 'image') { %>
+                        <br><img class="thumb" src="/media/<%= encodeURIComponent(m.id) %>/<%= encodeURIComponent(chatId) %>" loading="lazy">
+                        <br><a href="/media/<%= encodeURIComponent(m.id) %>/<%= encodeURIComponent(chatId) %>" target="_blank">View full</a>
+                    <% } else { %>
+                        <br><a href="/media/<%= encodeURIComponent(m.id) %>/<%= encodeURIComponent(chatId) %>" target="_blank">View attachment</a>
+                    <% } %>
+                <% } %>
+                <span class="time"><%= new Date(m.timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) %></span>
+            </div>
+        <% }); %>
+    </div>
+
+    <form class="sendform" id="sendForm" method="post" action="/chat/<%= chatId %>/send">
+        <input type="text" name="text" id="textInput" autocomplete="off">
+        <input type="submit" value="Send">
+    </form>
+
+    <script src="/poll.js"></script>
+    <script>
+        var CHAT_ID = "<%= chatId %>";
+        var LAST_TS = <%= messages.length ? messages[messages.length - 1].timestamp : 0 %>;
+        var OLDEST_TS = <%= messages.length ? messages[0].timestamp : Math.floor(Date.now()/1000) %>;
+        startPolling(CHAT_ID, LAST_TS);
+        scrollToBottom();
+        document.getElementById('sendForm').addEventListener('submit', sendMessage);
+    </script>
+</body>
+</html>

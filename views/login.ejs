@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WhatsApp - Connect</title>
+    <link rel="stylesheet" href="/style.css">
+    <% if (!waReady) { %><meta http-equiv="refresh" content="5"><% } %>
+</head>
+<body>
+    <div class="header">WhatsApp</div>
+    <div style="padding:20px;">
+        <% if (waReady) { %>
+            <p>Connected. <a href="/">Go to chats</a></p>
+        <% } else if (qr) { %>
+            <p>Scan this QR code with WhatsApp:</p>
+            <img src="<%= qr %>" width="250" height="250">
+            <p>This page refreshes automatically.</p>
+        <% } else { %>
+            <p>Waiting for QR code...</p>
+        <% } %>
+    </div>
+</body>
+</html>

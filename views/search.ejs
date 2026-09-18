@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Search</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="header">
+        Search
+        <a href="/chat/<%= chatId %>" style="color:#ffffff;float:right;">Back</a>
+    </div>
+    <form method="get" action="/chat/<%= chatId %>/search" style="padding:10px;">
+        <input type="text" name="q" value="<%= query %>">
+        <input type="submit" value="Search">
+    </form>
+    <div class="messages">
+        <% results.forEach(function(m) { %>
+            <div class="msg <%= m.fromMe ? 'out' : 'in' %>"><%= m.text %></div>
+        <% }); %>
+        <% if (query && results.length === 0) { %>
+            <p>No messages found.</p>
+        <% } %>
+    </div>
+</body>
+</html>

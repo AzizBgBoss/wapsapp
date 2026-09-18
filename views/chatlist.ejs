@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>WapsApp</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="header">WapsApp</div>
+    <form class="startform" method="post" action="/start">
+        <input type="text" name="number" placeholder="Number w/ country code" autocomplete="off">
+        <input type="submit" value="Start convo">
+    </form>
+    <div class="chatlist">
+        <% chats.forEach(function(chat) { %>
+        <a class="chatitem" href="/chat/<%= encodeURIComponent(chat.id) %>">
+            <% if (chat.avatar) { %>
+                <img class="avatar" src="<%= chat.avatar %>">
+            <% } else { %>
+                <div class="avatar avatar-default" data-avatar-id="<%= encodeURIComponent(chat.id) %>"><%= chat.title.charAt(0).toUpperCase() %></div>
+            <% } %>
+            <div class="chatinfo">
+                <span class="title"><%= chat.title %></span>
+                <% if (chat.unread > 0) { %>
+                    <span class="unread"><%= chat.unread %></span>
+                <% } %>
+                <div class="preview"><%= chat.lastMessage %></div>
+            </div>
+        </a>
+        <% }); %>
+    </div>
+    <script src="/chatlist.js"></script>
+</body>
+</html>
