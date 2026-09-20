@@ -1,5 +1,7 @@
 const express = require('express');
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const multer = require('multer');
+const mime = require('mime');
+const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
 const qrcodeTerminal = require('qrcode-terminal');
 
@@ -29,6 +31,8 @@ const AUTH_TOKEN = process.env.AUTH_TOKEN || 'change-this-token'; // shared-secr
 
 const MEDIA_CACHE_DIR = path.join(__dirname, 'media-cache');
 if (!fs.existsSync(MEDIA_CACHE_DIR)) fs.mkdirSync(MEDIA_CACHE_DIR);
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
 const AVATAR_TTL = 30 * 60 * 1000; // profile pics rarely change
 const CONTACT_NAME_TTL = 60 * 60 * 1000; // names change even less
@@ -479,6 +483,7 @@ app.get('/chat/:id', requireAuth, async (req, res) => {
 
 // poll: returns an HTML fragment of messages newer than ?since=<unix ts>
 app.get('/chat/:id/poll', requireAuth, async (req, res) => {
+    if (!waReady) return res.send('');
     try {
         const chat = await wa.getChatById(req.params.id);
         const since = Number(req.query.since) || 0;
@@ -545,25 +550,43 @@ app.get('/chat/:id/older', requireAuth, async (req, res) => {
                 }
                 return `<div class="msg ${cls}" data-ts="${m.timestamp}"><b>${name}:</b> ${linkify(escapeHtml(m.body || ''))}${mediaHtml}<span class="time">${time}</span></div>`;
             }));
-        res.send(rendered.reverse().join(''));
+        res.send(rendered.join(''));
     } catch (e) {
         console.error('older error:', e);
         res.status(500).send('');
     }
 });
 
-app.post('/chat/:id/send', requireAuth, async (req, res) => {
+app.post('/chat/:id/send', requireAuth, upload.single('media'), async (req, res) => {
     try {
         const chat = await wa.getChatById(req.params.id);
         const text = (req.body.text || '').trim();
-        if (text) {
-            const sent = await chat.sendMessage(text);
-            if (req.xhr || req.headers.accept?.includes('application/json')) {
-                const time = formatTime(sent.timestamp);
-                return res.send(
-                    `<div class="msg out" data-ts="${sent.timestamp}"><b>You:</b> ${linkify(escapeHtml(text))}<span class="time">${time}</span></div>`
-                );
-            }
+        let sent;
+        if (req.file) {
+            const guessedMimetype = req.file.mimetype || mime.getType(req.file.originalname) || '';
+            const isInlineMediaType = /^(image|video|audio)\//.test(guessedMimetype);
+            const mimetype = guessedMimetype || 'application/octet-stream';
+            const media = new MessageMedia(mimetype, req.file.buffer.toString('base64'), req.file.originalname);
+            sent = await chat.sendMessage(media, { caption: text || undefined, sendMediaAsDocument: !isInlineMediaType });
+        } else if (text) {
+            sent = await chat.sendMessage(text);
+        } else {
+            return res.redirect(`/chat/${req.params.id}?token=${req.cookies.token || ''}`);
+        }
+        // chat.sendMessage() completing without throwing means WhatsApp accepted
+        // the message - the returned Message model can legitimately come back
+        // undefined/incomplete due to a timing race in whatsapp-web.js's own
+        // internal lookup, so a falsy `sent` here must NOT be treated as a
+        // failure (that used to fall through to a redirect, which some XHR
+        // clients don't follow transparently, surfacing a false "failed" alert
+        // for a message that had already gone out).
+        if (req.xhr || req.headers.accept?.includes('application/json')) {
+            const ts = sent?.timestamp || Math.floor(Date.now() / 1000);
+            const time = formatTime(ts);
+            const label = text ? linkify(escapeHtml(text)) : (req.file ? `[${escapeHtml(req.file.originalname)}]` : '');
+            return res.send(
+                `<div class="msg out" data-ts="${ts}"><b>You:</b> ${label}<span class="time">${time}</span></div>`
+            );
         }
         res.redirect(`/chat/${req.params.id}?token=${req.cookies.token || ''}`);
     } catch (e) {

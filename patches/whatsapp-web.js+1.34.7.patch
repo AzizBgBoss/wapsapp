@@ -1,3 +1,35 @@
+diff --git a/node_modules/whatsapp-web.js/src/util/Injected/Utils.js b/node_modules/whatsapp-web.js/src/util/Injected/Utils.js
+index 40df72e..0000000 100644
+--- a/node_modules/whatsapp-web.js/src/util/Injected/Utils.js
++++ b/node_modules/whatsapp-web.js/src/util/Injected/Utils.js
+@@ -546,8 +546,15 @@
+             isNewMsg: true,
+             type: 'chat',
+             ...ephemeralFields,
+             ...mediaOptions,
++            // mediaOptions (and its toJSON() output) can carry an internal
++            // __x_id property that collides with the outgoing message's own
++            // id field, corrupting it after it's set above and breaking every
++            // media send with a "getter must include an id property" error
++            // from WhatsApp Web's own sender-resolution code (text is
++            // unaffected since it has no mediaOptions). Strip it and restore
++            // the real id.
+             ...(mediaOptions.toJSON ? mediaOptions.toJSON() : {}),
+             ...quotedMsgOptions,
+             ...locationOptions,
+             ...pollOptions,
+@@ -556,9 +563,11 @@
+             ...buttonOptions,
+             ...listOptions,
+             ...botOptions,
+             ...extraOptions,
++            id: newMsgKey,
+         };
++        delete message.__x_id;
+ 
+         // Bot's won't reply if canonicalUrl is set (linking)
+         if (botOptions) {
+             delete message.canonicalUrl;
 diff --git a/node_modules/whatsapp-web.js/src/structures/Message.js b/node_modules/whatsapp-web.js/src/structures/Message.js
 index dd977e8..13c6848 100644
 --- a/node_modules/whatsapp-web.js/src/structures/Message.js
