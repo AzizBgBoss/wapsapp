@@ -7,17 +7,18 @@
 </head>
 <body>
     <div class="header">
-        <%= title %>
+        <% if (avatar) { %>
+            <img class="header-avatar" src="<%= avatar %>">
+        <% } %>
+        <span class="header-title"><%= title %></span>
         <a href="/" style="color:#ffffff;float:right;">Back</a>
     </div>
 
     <div class="toolbar">
         <div class="status live" id="statusBox">LIVE</div>
         <button class="probebtn" id="probeBtn" onclick="probeNow()">Probe</button>
-        <a href="/chat/<%= chatId %>/search">Search</a>
-        <% if (isGroup) { %> | <a href="#" onclick="loadWho(); return false;">Who</a><% } %>
+        <a href="/chat/<%= chatId %>/search">Search</a> | <a href="/chat/<%= chatId %>/about">About</a>
     </div>
-    <div id="whoBox"></div>
 
     <div id="seeMore" class="seemore"><a href="#" onclick="loadOlder(); return false;">See more above</a></div>
 
@@ -27,11 +28,17 @@
                 <b><%= m.name %>:</b>
                 <%- m.text %>
                 <% if (m.hasMedia) { %>
+                    <% var mediaUrl = '/media/' + encodeURIComponent(m.id) + '/' + encodeURIComponent(chatId); %>
                     <% if (m.mediaType === 'image') { %>
-                        <br><img class="thumb" src="/media/<%= encodeURIComponent(m.id) %>/<%= encodeURIComponent(chatId) %>" loading="lazy">
-                        <br><a href="/media/<%= encodeURIComponent(m.id) %>/<%= encodeURIComponent(chatId) %>" target="_blank">View full</a>
+                        <br><img class="thumb" src="<%= mediaUrl %>" loading="lazy">
+                        <br><a href="<%= mediaUrl %>" target="_blank">View full</a>
+                    <% } else if (m.mediaType === 'ptt' || m.mediaType === 'audio') { %>
+                        <br><audio controls src="<%= mediaUrl %>">Your browser does not support audio playback.</audio>
+                        <br><a href="<%= mediaUrl %>" target="_blank">View full</a>
+                    <% } else if (m.mediaType === 'video') { %>
+                        <br><a href="<%= mediaUrl %>" target="_blank">View full</a> | <a href="<%= mediaUrl %>?quality=480" target="_blank">480p</a> | <a href="<%= mediaUrl %>?quality=360" target="_blank">360p</a>
                     <% } else { %>
-                        <br><a href="/media/<%= encodeURIComponent(m.id) %>/<%= encodeURIComponent(chatId) %>" target="_blank">View attachment</a>
+                        <br><a href="<%= mediaUrl %>" target="_blank">View attachment<% if (m.mimetype) { %> (<%= m.mimetype %>)<% } %></a>
                     <% } %>
                 <% } %>
                 <span class="time"><%= new Date(m.timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) %></span>

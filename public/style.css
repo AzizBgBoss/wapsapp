@@ -7,6 +7,7 @@ body {
 }
 
 * {
+    -webkit-box-sizing: border-box;
     box-sizing: border-box;
 }
 
@@ -19,6 +20,73 @@ body {
     position: sticky;
     top: 0;
     z-index: 10;
+    display: -webkit-box;
+    -webkit-box-orient: horizontal;
+    -webkit-box-align: center;
+    display: flex;
+    align-items: center;
+}
+
+.header-avatar {
+    width: 32px;
+    height: 32px;
+    -webkit-border-radius: 50%;
+    border-radius: 50%;
+    margin-right: 8px;
+    flex-shrink: 0;
+    object-fit: cover;
+}
+
+.header-title {
+    -webkit-box-flex: 1;
+    flex: 1;
+}
+
+.about-page {
+    background-color: #ffffff;
+    padding: 16px;
+}
+
+.about-avatar {
+    width: 96px;
+    height: 96px;
+    -webkit-border-radius: 50%;
+    border-radius: 50%;
+    display: block;
+    margin: 0 auto 12px auto;
+    object-fit: cover;
+}
+
+.about-name {
+    text-align: center;
+    font-size: 18px;
+    font-weight: bold;
+    color: #075e54;
+}
+
+.about-number {
+    text-align: center;
+    color: #666666;
+    margin-bottom: 16px;
+}
+
+.about-section-title {
+    font-weight: bold;
+    color: #075e54;
+    border-bottom: 1px solid #dddddd;
+    padding-bottom: 4px;
+    margin-top: 16px;
+}
+
+.participant {
+    display: block;
+    display: -webkit-box;
+    -webkit-box-orient: horizontal;
+    -webkit-box-align: center;
+    display: flex;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid #eeeeee;
 }
 
 .toolbar {
@@ -31,6 +99,9 @@ body {
 }
 
 .startform {
+    display: block; /* fallback for BlackBerry 6 WebKit (no flexbox) */
+    display: -webkit-box;
+    -webkit-box-orient: horizontal;
     display: flex;
     background-color: #ffffff;
     padding: 8px;
@@ -38,6 +109,7 @@ body {
 }
 
 .startform input[type="text"] {
+    -webkit-box-flex: 1;
     flex: 1;
     padding: 8px;
     border: 1px solid #cccccc;
@@ -56,6 +128,10 @@ body {
 }
 
 .chatitem {
+    display: block; /* fallback for BlackBerry 6 WebKit (no flexbox) */
+    display: -webkit-box;
+    -webkit-box-orient: horizontal;
+    -webkit-box-align: center;
     display: flex;
     align-items: center;
     padding: 10px;
@@ -67,16 +143,27 @@ body {
 .avatar {
     width: 42px;
     height: 42px;
+    -webkit-border-radius: 50%;
     border-radius: 50%;
     margin-right: 10px;
     flex-shrink: 0;
+    /* object-fit isn't supported on old WebKit (BB6) - photos with a
+       different aspect ratio than square will stretch there instead
+       of cropping. Acceptable degradation, not fixable in pure CSS. */
     object-fit: cover;
 }
 
 .avatar-default {
+    display: block; /* fallback for BlackBerry 6 WebKit (no flexbox) */
+    display: -webkit-box;
+    -webkit-box-orient: horizontal;
+    -webkit-box-align: center;
+    -webkit-box-pack: center;
     display: flex;
     align-items: center;
     justify-content: center;
+    text-align: center;
+    line-height: 42px; /* extra fallback: centers the letter even with no flexbox at all */
     background-color: #075e54;
     color: #ffffff;
     font-weight: bold;
@@ -84,6 +171,7 @@ body {
 
 .chatinfo {
     min-width: 0;
+    -webkit-box-flex: 1;
     flex: 1;
 }
 
@@ -145,6 +233,7 @@ body {
 .thumb {
     max-width: 100%;
     max-height: 240px;
+    -webkit-border-radius: 4px;
     border-radius: 4px;
     margin-top: 4px;
 }

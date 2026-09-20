@@ -6,6 +6,7 @@ const qrcodeTerminal = require('qrcode-terminal');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { spawn } = require('child_process');
 
 // tiny .env loader (no extra dependency)
 (function loadEnv() {
@@ -72,6 +73,33 @@ wa.on('disconnected', reason => {
     waReady = false;
 });
 
+// Proactively cache media as it arrives. WhatsApp only mirrors media for a
+// limited window, and messages pulled later via fetchMessages() can't be
+// looked up in the live message store for decryption (see /media route),
+// so we grab it now while `msg` is still the real live model.
+wa.on('message_create', async msg => {
+    if (!msg.hasMedia) return;
+    try {
+        const msgId = msg.id?._serialized || msg.id?.$1;
+        if (!msgId) return;
+        const { data: dataPath, meta: metaPath } = mediaCachePaths(msgId);
+        if (fs.existsSync(dataPath)) return; // already cached
+
+        const media = await msg.downloadMedia();
+        if (!media || !media.data) {
+            console.log('[auto-cache] could not download media for', msgId);
+            return;
+        }
+        const transcoded = await maybeTranscodeToMp3(media, msg.type);
+        const buffer = Buffer.from(transcoded.data, 'base64');
+        fs.writeFile(dataPath, buffer, () => {});
+        fs.writeFile(metaPath, JSON.stringify({ mimetype: transcoded.mimetype }), () => {});
+        console.log('[auto-cache] cached media for', msgId);
+    } catch (e) {
+        console.log('[auto-cache] error:', e && e.message || e);
+    }
+});
+
 // ---- helpers ----
 
 function serializedId(id) {
@@ -115,12 +143,132 @@ async function getContactName(id) {
     return name;
 }
 
-function mediaCachePaths(msgId) {
-    const key = crypto.createHash('sha1').update(msgId).digest('hex');
+// For group chats, the sender's own name (not the group's name). Falls back to
+// notifyName, then resolves the participant's contact name from m.author.
+async function messageSenderName(m, chat) {
+    if (m.fromMe) return 'You';
+    if (chat.isGroup) {
+        if (m._data?.notifyName) return m._data.notifyName;
+        const authorId = typeof m.author === 'string' ? m.author : serializedId(m.author);
+        if (authorId) return await getContactName(authorId);
+        return 'Unknown';
+    }
+    return m._data?.notifyName || chat.name || 'Unknown';
+}
+
+function mediaCachePaths(msgId, quality) {
+    const key = crypto.createHash('sha1').update(msgId + (quality ? ':' + quality : '')).digest('hex');
     return {
         data: path.join(MEDIA_CACHE_DIR, key + '.bin'),
         meta: path.join(MEDIA_CACHE_DIR, key + '.json')
     };
+}
+
+let ffmpegMissingLogged = false;
+
+// Transcodes WhatsApp voice notes (Opus/OGG) to MP3 so older devices without
+// Opus support (e.g. the PSP's NetFront browser) can play them. Fully
+// optional: if ffmpeg isn't installed, this logs once and the caller keeps
+// serving the original media untouched.
+function maybeTranscodeToMp3(media, type) {
+    const isVoiceNote = type === 'ptt' || (media.mimetype && media.mimetype.includes('ogg'));
+    if (!isVoiceNote) return Promise.resolve(media);
+
+    return new Promise(resolve => {
+        const inputBuffer = Buffer.from(media.data, 'base64');
+        let ff;
+        try {
+            ff = spawn('ffmpeg', ['-i', 'pipe:0', '-f', 'mp3', '-codec:a', 'libmp3lame', '-qscale:a', '4', 'pipe:1']);
+        } catch (e) {
+            if (!ffmpegMissingLogged) {
+                console.log('[transcode] ffmpeg not found, cannot transcode media, displaying media as is');
+                ffmpegMissingLogged = true;
+            }
+            return resolve(media);
+        }
+
+        const chunks = [];
+        let settled = false;
+        ff.stdout.on('data', c => chunks.push(c));
+        ff.stderr.on('data', () => {}); // discard ffmpeg's own logging
+        ff.on('error', (e) => {
+            if (settled) return;
+            settled = true;
+            if (e.code === 'ENOENT' && !ffmpegMissingLogged) {
+                console.log('[transcode] ffmpeg not found, cannot transcode media, displaying media as is');
+                ffmpegMissingLogged = true;
+            } else {
+                console.log('[transcode] ffmpeg error, displaying media as is:', e.message);
+            }
+            resolve(media);
+        });
+        ff.on('close', code => {
+            if (settled) return;
+            settled = true;
+            if (code === 0 && chunks.length) {
+                const mp3Buffer = Buffer.concat(chunks);
+                resolve({ data: mp3Buffer.toString('base64'), mimetype: 'audio/mpeg', filename: media.filename, filesize: mp3Buffer.length });
+            } else {
+                console.log('[transcode] ffmpeg exited with code', code, '- displaying media as is');
+                resolve(media);
+            }
+        });
+        ff.stdin.write(inputBuffer);
+        ff.stdin.end();
+    });
+}
+
+// Downscales video to a target height (480 or 360) so slower devices/connections
+// can play it. Optional: if ffmpeg is missing, logs once and returns null so the
+// caller falls back to serving the original file.
+function transcodeVideo(inputBuffer, targetHeight) {
+    return new Promise(resolve => {
+        let ff;
+        try {
+            ff = spawn('ffmpeg', [
+                '-i', 'pipe:0',
+                '-vf', `scale=-2:${targetHeight}`,
+                '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28',
+                '-c:a', 'aac', '-b:a', '96k',
+                '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov',
+                'pipe:1'
+            ]);
+        } catch (e) {
+            if (!ffmpegMissingLogged) {
+                console.log('[transcode] ffmpeg not found, cannot transcode media, displaying media as is');
+                ffmpegMissingLogged = true;
+            }
+            return resolve(null);
+        }
+
+        const chunks = [];
+        let settled = false;
+        ff.stdout.on('data', c => chunks.push(c));
+        ff.stderr.on('data', () => {});
+        ff.on('error', (e) => {
+            if (settled) return;
+            settled = true;
+            if (e.code === 'ENOENT' && !ffmpegMissingLogged) {
+                console.log('[transcode] ffmpeg not found, cannot transcode media, displaying media as is');
+                ffmpegMissingLogged = true;
+            } else {
+                console.log('[transcode] ffmpeg error, displaying media as is:', e.message);
+            }
+            resolve(null);
+        });
+        ff.on('close', code => {
+            if (settled) return;
+            settled = true;
+            if (code === 0 && chunks.length) {
+                resolve(Buffer.concat(chunks));
+            } else {
+                console.log('[transcode] ffmpeg exited with code', code, '- displaying media as is');
+                resolve(null);
+            }
+        });
+        ff.stdin.write(inputBuffer);
+        ff.stdin.end();
+    });
 }
 
 function requireAuth(req, res, next) {
@@ -237,20 +385,23 @@ app.get('/chat/:id', requireAuth, async (req, res) => {
     try {
         const chat = await wa.getChatById(req.params.id);
         const messages = await chat.fetchMessages({ limit: 30 });
+        const avatar = await getAvatarUrl(req.params.id);
 
-        const view = messages.map(m => ({
+        const view = await Promise.all(messages.map(async m => ({
             id: m.id?._serialized || m.id?.$1,
             fromMe: m.fromMe,
-            name: m.fromMe ? 'You' : (m._data?.notifyName || chat.name || 'Unknown'),
+            name: await messageSenderName(m, chat),
             text: linkify(escapeHtml(m.body || '')),
             hasMedia: m.hasMedia,
             mediaType: m.type,
+            mimetype: m._data?.mimetype,
             timestamp: m.timestamp
-        }));
+        })));
 
         res.render('chat', {
             chatId: req.params.id,
             title: chatTitle(chat),
+            avatar,
             messages: view,
             isGroup: chat.isGroup
         });
@@ -271,22 +422,27 @@ app.get('/chat/:id/poll', requireAuth, async (req, res) => {
 
         const chatIdSerialized = serializedId(chat.id);
         res.set('Content-Type', 'text/html');
-        res.send(
-            fresh.map(m => {
-                const name = m.fromMe ? 'You' : (m._data?.notifyName || chat.name || 'Unknown');
+        const rendered = await Promise.all(fresh.map(async m => {
+                const name = await messageSenderName(m, chat);
                 const cls = m.fromMe ? 'out' : 'in';
                 const msgId = m.id?._serialized || m.id?.$1;
                 const time = formatTime(m.timestamp);
                 let mediaHtml = '';
                 if (m.hasMedia) {
                     const mediaUrl = `/media/${encodeURIComponent(msgId)}/${encodeURIComponent(chatIdSerialized)}`;
-                    mediaHtml = m.type === 'image'
-                        ? `<br><img class="thumb" src="${mediaUrl}" loading="lazy"><br><a href="${mediaUrl}" target="_blank">View full</a>`
-                        : `<br><a href="${mediaUrl}" target="_blank">View attachment</a>`;
+                    if (m.type === 'image') {
+                        mediaHtml = `<br><img class="thumb" src="${mediaUrl}" loading="lazy"><br><a href="${mediaUrl}" target="_blank">View full</a>`;
+                    } else if (m.type === 'ptt' || m.type === 'audio') {
+                        mediaHtml = `<br><audio controls src="${mediaUrl}">Your browser does not support audio playback.</audio><br><a href="${mediaUrl}" target="_blank">View full</a>`;
+                    } else if (m.type === 'video') {
+                        mediaHtml = `<br><a href="${mediaUrl}" target="_blank">View full</a> | <a href="${mediaUrl}?quality=480" target="_blank">480p</a> | <a href="${mediaUrl}?quality=360" target="_blank">360p</a>`;
+                    } else {
+                        mediaHtml = `<br><a href="${mediaUrl}" target="_blank">View attachment${m._data?.mimetype ? ' (' + escapeHtml(m._data.mimetype) + ')' : ''}</a>`;
+                    }
                 }
                 return `<div class="msg ${cls}" data-ts="${m.timestamp}"><b>${name}:</b> ${linkify(escapeHtml(m.body || ''))}${mediaHtml}<span class="time">${time}</span></div>`;
-            }).join('')
-        );
+            }));
+        res.send(rendered.join(''));
     } catch (e) {
         console.error('poll error:', e);
         res.status(500).send('');
@@ -303,22 +459,27 @@ app.get('/chat/:id/older', requireAuth, async (req, res) => {
         const older = messages.filter(m => (m.timestamp || 0) < before).slice(-20);
 
         res.set('Content-Type', 'text/html');
-        res.send(
-            older.map(m => {
-                const name = m.fromMe ? 'You' : (m._data?.notifyName || chat.name || 'Unknown');
+        const rendered = await Promise.all(older.map(async m => {
+                const name = await messageSenderName(m, chat);
                 const cls = m.fromMe ? 'out' : 'in';
                 const msgId = m.id?._serialized || m.id?.$1;
                 const time = formatTime(m.timestamp);
                 let mediaHtml = '';
                 if (m.hasMedia) {
                     const mediaUrl = `/media/${encodeURIComponent(msgId)}/${encodeURIComponent(chatIdSerialized)}`;
-                    mediaHtml = m.type === 'image'
-                        ? `<br><img class="thumb" src="${mediaUrl}" loading="lazy"><br><a href="${mediaUrl}" target="_blank">View full</a>`
-                        : `<br><a href="${mediaUrl}" target="_blank">View attachment</a>`;
+                    if (m.type === 'image') {
+                        mediaHtml = `<br><img class="thumb" src="${mediaUrl}" loading="lazy"><br><a href="${mediaUrl}" target="_blank">View full</a>`;
+                    } else if (m.type === 'ptt' || m.type === 'audio') {
+                        mediaHtml = `<br><audio controls src="${mediaUrl}">Your browser does not support audio playback.</audio><br><a href="${mediaUrl}" target="_blank">View full</a>`;
+                    } else if (m.type === 'video') {
+                        mediaHtml = `<br><a href="${mediaUrl}" target="_blank">View full</a> | <a href="${mediaUrl}?quality=480" target="_blank">480p</a> | <a href="${mediaUrl}?quality=360" target="_blank">360p</a>`;
+                    } else {
+                        mediaHtml = `<br><a href="${mediaUrl}" target="_blank">View attachment${m._data?.mimetype ? ' (' + escapeHtml(m._data.mimetype) + ')' : ''}</a>`;
+                    }
                 }
                 return `<div class="msg ${cls}" data-ts="${m.timestamp}"><b>${name}:</b> ${linkify(escapeHtml(m.body || ''))}${mediaHtml}<span class="time">${time}</span></div>`;
-            }).reverse().join('')
-        );
+            }));
+        res.send(rendered.reverse().join(''));
     } catch (e) {
         console.error('older error:', e);
         res.status(500).send('');
@@ -366,12 +527,54 @@ app.get('/chat/:id/search', requireAuth, async (req, res) => {
     }
 });
 
+app.get('/chat/:id/about', requireAuth, async (req, res) => {
+    try {
+        const chat = await wa.getChatById(req.params.id);
+        const avatar = await getAvatarUrl(req.params.id);
+
+        let number = null;
+        let participants = [];
+
+        if (chat.isGroup) {
+            const raw = chat.participants || chat.groupMetadata?.participants || [];
+            participants = await Promise.all(
+                raw.map(async p => {
+                    const id = serializedId(p.id) || p.id?.user || 'unknown';
+                    const name = await getContactName(id);
+                    const role = p.isSuperAdmin ? 'owner' : (p.isAdmin ? 'admin' : '');
+                    return { name, role, number: id.split('@')[0] };
+                })
+            );
+        } else {
+            try {
+                const contact = await wa.getContactById(req.params.id);
+                number = contact?.number || chat.id?.user || null;
+            } catch (e) {
+                number = chat.id?.user || null;
+            }
+        }
+
+        res.render('about', {
+            chatId: req.params.id,
+            title: chatTitle(chat),
+            avatar,
+            number,
+            isGroup: chat.isGroup,
+            participants
+        });
+    } catch (e) {
+        console.error('about error:', e);
+        res.status(500).send('Error loading info: ' + (e?.message || e));
+    }
+});
+
 app.get('/chat/:id/who', requireAuth, async (req, res) => {
     try {
         const chat = await wa.getChatById(req.params.id);
         if (!chat.isGroup) return res.send('<p>Not a group.</p>');
 
-        const participants = chat.groupMetadata?.participants || [];
+        const participants = chat.participants || chat.groupMetadata?.participants || [];
+        console.log('[who debug] isGroup=%s participantCount=%d', chat.isGroup, participants.length);
         const resolved = await Promise.all(
             participants.map(async p => {
                 const id = serializedId(p.id) || p.id?.user || 'unknown';
@@ -390,7 +593,8 @@ app.get('/chat/:id/who', requireAuth, async (req, res) => {
 
 app.get('/media/:msgId/:chatId', requireAuth, async (req, res) => {
     try {
-        const { data: dataPath, meta: metaPath } = mediaCachePaths(req.params.msgId);
+        const quality = ['480', '360'].includes(req.query.quality) ? req.query.quality : null;
+        const { data: dataPath, meta: metaPath } = mediaCachePaths(req.params.msgId, quality);
 
         if (fs.existsSync(dataPath) && fs.existsSync(metaPath)) {
             const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
@@ -400,12 +604,100 @@ app.get('/media/:msgId/:chatId', requireAuth, async (req, res) => {
         }
 
         const chat = await wa.getChatById(req.params.chatId);
-        const messages = await chat.fetchMessages({ limit: 50 });
+        let messages;
+        try {
+            messages = await chat.fetchMessages({ limit: 50 });
+        } catch (e) {
+            if (e?.name === 'ProtocolError') {
+                messages = await chat.fetchMessages({ limit: 50 }); // retry once: puppeteer context can get collected under concurrent evaluate calls
+            } else {
+                throw e;
+            }
+        }
         const msg = messages.find(m => (m.id?._serialized || m.id?.$1) === req.params.msgId);
 
         if (!msg || !msg.hasMedia) return res.status(404).send('Not found');
 
-        const media = await msg.downloadMedia();
+        console.log('[media debug] msgId=%s type=%s timestamp=%s ageSec=%s', req.params.msgId, msg.type, msg.timestamp, Math.floor(Date.now() / 1000) - msg.timestamp);
+
+        // whatsapp-web.js's built-in downloadMedia() looks the message up inside
+        // the page's live Msg collection, but messages returned by fetchMessages()
+        // are never inserted into that collection, so the lookup always fails here
+        // (confirmed via debug logging). We already have everything downloadMedia()
+        // needs on the raw message data, so decrypt directly instead of relying on
+        // that lookup.
+        // whatsapp-web.js's built-in downloadMedia() looks the message up inside
+        // the page's live Msg collection. That lookup was broken for LID-style ids
+        // (WhatsApp's 2026-07 web update renamed id._serialized -> id.$1, which the
+        // patch's lookup didn't try) - now patched in patch-wwebjs.js, so try the
+        // real path first since it handles video's streaming sidecar correctly.
+        // Fall back to a manual raw-field decrypt (which works for images/audio/docs
+        // but not video) if the real path still comes back empty.
+        const raw = msg.rawData || msg._data || {};
+        let media = null;
+        try {
+            media = await msg.downloadMedia();
+            console.log('[media debug] built-in downloadMedia result:', media ? ('ok dataLen=' + (media.data ? media.data.length : 0)) : 'null/undefined');
+        } catch (builtInErr) {
+            console.log('[media debug] built-in downloadMedia threw:', builtInErr && builtInErr.stack || builtInErr);
+        }
+        if (!media || !media.data) {
+            try {
+                const result = await wa.pupPage.evaluate(async (fields) => {
+                    try {
+                        const mockQpl = {
+                            addAnnotations: function () { return this; },
+                            addPoint: function () { return this; }
+                        };
+                        let mediaType = fields.type;
+                        try {
+                            mediaType = window.require('WAWebMmsMediaTypes').msgToMediaType({ type: fields.type, isGif: false });
+                        } catch (mapErr) { /* fall back to raw string type */ }
+                        const decryptedMedia = await window.require('WAWebDownloadManager')
+                            .downloadManager.downloadAndMaybeDecrypt({
+                                directPath: fields.directPath,
+                                encFilehash: fields.encFilehash,
+                                filehash: fields.filehash,
+                                mediaKey: fields.mediaKey,
+                                mediaKeyTimestamp: fields.mediaKeyTimestamp,
+                                type: mediaType,
+                                signal: new AbortController().signal,
+                                downloadQpl: mockQpl
+                            });
+                        const data = await window.WWebJS.arrayBufferToBase64Async(decryptedMedia);
+                        return { data, mimetype: fields.mimetype, filesize: fields.filesize };
+                    } catch (e) {
+                        return { error: (e && e.message) || String(e) };
+                    }
+                }, {
+                    directPath: raw.directPath,
+                    encFilehash: raw.encFilehash,
+                    filehash: raw.filehash,
+                    mediaKey: raw.mediaKey,
+                    mediaKeyTimestamp: raw.mediaKeyTimestamp,
+                    type: raw.type,
+                    mimetype: raw.mimetype,
+                    filesize: raw.size
+                });
+                console.log('[media debug] direct decrypt result:', result && result.error ? ('error: ' + result.error) : ('ok dataLen=' + (result?.data?.length || 0)), 'rawType=', raw.type, 'rawMimetype=', raw.mimetype);
+                if (result && !result.error && result.data) {
+                    media = result;
+                }
+            } catch (mediaErr) {
+                console.log('[media debug] direct decrypt threw:', mediaErr && mediaErr.stack || mediaErr);
+            }
+        }
+        if (!media || !media.data) {
+            return res.status(410).send(`Media not available yet (type: ${raw.type || 'unknown'}, mimetype: ${raw.mimetype || 'unknown'}). Open WhatsApp on your phone and view this media there once, then try again here.`);
+        }
+        media = await maybeTranscodeToMp3(media, raw.type);
+        if (quality && (raw.type === 'video' || (media.mimetype || '').startsWith('video'))) {
+            const originalBuffer = Buffer.from(media.data, 'base64');
+            const scaledBuffer = await transcodeVideo(originalBuffer, quality);
+            if (scaledBuffer) {
+                media = { data: scaledBuffer.toString('base64'), mimetype: 'video/mp4' };
+            } // else: ffmpeg missing/failed, fall through and serve original quality
+        }
         const buffer = Buffer.from(media.data, 'base64');
 
         // cache to disk so repeat views (or a poll re-rendering the same <img>) don't
@@ -442,3 +734,22 @@ app.listen(PORT, '0.0.0.0', () => {
 wa.initialize().catch(err => {
     console.error('WhatsApp initialize failed:', err);
 });
+
+// Ctrl+C (or a process manager stopping us) leaves the Puppeteer/Chrome
+// process running otherwise, which then locks wa-session/session and blocks
+// the next start with "browser is already running".
+let shuttingDown = false;
+async function shutdown(signal) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`\nReceived ${signal}, closing WhatsApp session...`);
+    try {
+        await wa.destroy();
+        console.log('Closed cleanly.');
+    } catch (e) {
+        console.log('Error while closing:', e && e.message || e);
+    }
+    process.exit(0);
+}
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));

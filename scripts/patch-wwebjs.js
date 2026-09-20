@@ -78,6 +78,7 @@ function patchUtils() {
 
         addCandidate(msgId);
         if (msgId && msgId._serialized) addCandidate(msgId._serialized);
+        if (msgId && msgId.$1) addCandidate(msgId.$1); // WhatsApp's 2026-07 web update renamed _serialized -> $1
         if (typeof msgId === 'string') addCandidate(msgId);
         if (msgId && msgId.id) addCandidate(msgId.id);
 
@@ -122,6 +123,7 @@ function patchUtils() {
         try {
             const wanted =
                 (msgId && msgId._serialized) ||
+                (msgId && msgId.$1) ||
                 (typeof msgId === 'string' ? msgId : undefined);
             if (wanted) {
                 const models =
@@ -129,7 +131,7 @@ function patchUtils() {
                     Msg.models ||
                     Msg._models ||
                     [];
-                const match = models.find((m) => m.id?._serialized === wanted);
+                const match = models.find((m) => (m.id?._serialized || m.id?.$1) === wanted);
                 if (match) return match;
             }
         } catch (ignoredError) {

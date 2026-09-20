@@ -108,16 +108,20 @@ function sendMessage(e) {
     xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
     xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
     xhr.onreadystatechange = function () {
-        if (xhr.readyState === 4 && xhr.status === 200) {
-            var container = document.getElementById('messages');
-            if (container) {
-                container.innerHTML = container.innerHTML + xhr.responseText;
-                scrollToBottom();
-            }
+        if (xhr.readyState === 4) {
             input.value = '';
-            pollSince = Math.floor(Date.now() / 1000);
-            resetIdleTimer();
-            setStatusLive();
+            if (xhr.status === 200) {
+                var container = document.getElementById('messages');
+                if (container) {
+                    container.innerHTML = container.innerHTML + xhr.responseText;
+                    scrollToBottom();
+                }
+                pollSince = Math.floor(Date.now() / 1000);
+                resetIdleTimer();
+                setStatusLive();
+            } else {
+                alert('Failed to send message.');
+            }
         }
     };
     xhr.send('text=' + encodeURIComponent(text));
@@ -134,10 +138,22 @@ function loadOlder() {
             var container = document.getElementById('messages');
             if (container && xhr.responseText) {
                 var prevHeight = container.scrollHeight;
-                container.insertAdjacentHTML('afterbegin', xhr.responseText);
+
+                // Avoid insertAdjacentHTML - not reliably supported on older
+                // WebKit (e.g. BlackBerry 6). Build the nodes in a scratch
+                // element instead and move them with plain DOM calls, which
+                // have been supported forever.
+                var temp = document.createElement('div');
+                temp.innerHTML = xhr.responseText;
+                var frag = document.createDocumentFragment();
+                while (temp.firstChild) {
+                    frag.appendChild(temp.firstChild);
+                }
+                container.insertBefore(frag, container.firstChild);
+
                 container.scrollTop = container.scrollHeight - prevHeight;
 
-                var firstMsg = container.querySelector('.msg');
+                var firstMsg = container.getElementsByClassName ? container.getElementsByClassName('msg')[0] : null;
                 if (firstMsg) {
                     OLDEST_TS = Number(firstMsg.getAttribute('data-ts')) || OLDEST_TS;
                 }

@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>About - <%= title %></title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="header">
+        <a href="/chat/<%= chatId %>" style="color:#ffffff;text-decoration:none;margin-right:10px;">&larr;</a>
+        <span class="header-title">About</span>
+    </div>
+
+    <div class="about-page">
+        <% if (avatar) { %>
+            <img class="about-avatar" src="<%= avatar %>">
+        <% } else { %>
+            <div class="avatar avatar-default about-avatar" style="line-height:96px;font-size:32px;"><%= title.charAt(0).toUpperCase() %></div>
+        <% } %>
+        <div class="about-name"><%= title %></div>
+        <% if (number) { %>
+            <div class="about-number"><%= number %></div>
+        <% } %>
+
+        <% if (isGroup) { %>
+            <div class="about-section-title"><%= participants.length %> participant<%= participants.length === 1 ? '' : 's' %></div>
+            <% participants.forEach(function(p) { %>
+                <div class="participant">
+                    <div style="flex:1;">
+                        <%= p.name %><% if (p.role) { %> <span style="color:#888;font-size:12px;">(<%= p.role %>)</span><% } %>
+                        <div style="font-size:12px;color:#888;"><%= p.number %></div>
+                    </div>
+                </div>
+            <% }); %>
+        <% } %>
+    </div>
+</body>
+</html>
