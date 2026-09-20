@@ -49,10 +49,10 @@
     <form class="sendform" id="sendForm" method="post" action="/chat/<%= chatId %>/send" enctype="multipart/form-data">
         <input type="text" name="text" id="textInput" autocomplete="off">
         <input type="file" name="media" id="mediaInput">
-        <input type="submit" value="Send">
+        <input type="submit" value="Send" id="sendBtn">
     </form>
 
-    <script src="/poll.js?v=2"></script>
+    <script src="/poll.js?v=3"></script>
     <script>
         var CHAT_ID = "<%= chatId %>";
         var LAST_TS = <%= messages.length ? messages[messages.length - 1].timestamp : 0 %>;

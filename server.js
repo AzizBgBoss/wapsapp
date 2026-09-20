@@ -161,6 +161,30 @@ async function messageSenderName(m, chat) {
     return m._data?.notifyName || chat.name || 'Unknown';
 }
 
+// Shared by /poll, /older, and /send so a message renders identically
+// (including its media markup) no matter which route produced it.
+async function renderMessageFragment(m, chat) {
+    const chatIdSerialized = serializedId(chat.id);
+    const name = await messageSenderName(m, chat);
+    const cls = m.fromMe ? 'out' : 'in';
+    const msgId = m.id?._serialized || m.id?.$1;
+    const time = formatTime(m.timestamp);
+    let mediaHtml = '';
+    if (m.hasMedia) {
+        const mediaUrl = `/media/${encodeURIComponent(msgId)}/${encodeURIComponent(chatIdSerialized)}`;
+        if (m.type === 'image') {
+            mediaHtml = `<br><img class="thumb" src="${mediaUrl}?quality=thumb" loading="lazy"><br><a href="${mediaUrl}" target="_blank">View full</a>`;
+        } else if (m.type === 'ptt' || m.type === 'audio') {
+            mediaHtml = `<br><audio controls src="${mediaUrl}">Your browser does not support audio playback.</audio><br><a href="${mediaUrl}" target="_blank">View full</a>`;
+        } else if (m.type === 'video') {
+            mediaHtml = `<br><a href="${mediaUrl}" target="_blank">View full</a> | <a href="${mediaUrl}?quality=480" target="_blank">480p</a> | <a href="${mediaUrl}?quality=360" target="_blank">360p</a>`;
+        } else {
+            mediaHtml = `<br><a href="${mediaUrl}" target="_blank">View attachment${m._data?.mimetype ? ' (' + escapeHtml(m._data.mimetype) + ')' : ''}</a>`;
+        }
+    }
+    return `<div class="msg ${cls}" data-ts="${m.timestamp}"><b>${name}:</b> ${linkify(escapeHtml(m.body || ''))}${mediaHtml}<span class="time">${time}</span></div>`;
+}
+
 function mediaCachePaths(msgId, quality) {
     const key = crypto.createHash('sha1').update(msgId + (quality ? ':' + quality : '')).digest('hex');
     return {
@@ -491,28 +515,8 @@ app.get('/chat/:id/poll', requireAuth, async (req, res) => {
         const messages = await chat.fetchMessages({ limit: 30 });
         const fresh = messages.filter(m => (m.timestamp || 0) > since);
 
-        const chatIdSerialized = serializedId(chat.id);
         res.set('Content-Type', 'text/html');
-        const rendered = await Promise.all(fresh.map(async m => {
-                const name = await messageSenderName(m, chat);
-                const cls = m.fromMe ? 'out' : 'in';
-                const msgId = m.id?._serialized || m.id?.$1;
-                const time = formatTime(m.timestamp);
-                let mediaHtml = '';
-                if (m.hasMedia) {
-                    const mediaUrl = `/media/${encodeURIComponent(msgId)}/${encodeURIComponent(chatIdSerialized)}`;
-                    if (m.type === 'image') {
-                        mediaHtml = `<br><img class="thumb" src="${mediaUrl}?quality=thumb" loading="lazy"><br><a href="${mediaUrl}" target="_blank">View full</a>`;
-                    } else if (m.type === 'ptt' || m.type === 'audio') {
-                        mediaHtml = `<br><audio controls src="${mediaUrl}">Your browser does not support audio playback.</audio><br><a href="${mediaUrl}" target="_blank">View full</a>`;
-                    } else if (m.type === 'video') {
-                        mediaHtml = `<br><a href="${mediaUrl}" target="_blank">View full</a> | <a href="${mediaUrl}?quality=480" target="_blank">480p</a> | <a href="${mediaUrl}?quality=360" target="_blank">360p</a>`;
-                    } else {
-                        mediaHtml = `<br><a href="${mediaUrl}" target="_blank">View attachment${m._data?.mimetype ? ' (' + escapeHtml(m._data.mimetype) + ')' : ''}</a>`;
-                    }
-                }
-                return `<div class="msg ${cls}" data-ts="${m.timestamp}"><b>${name}:</b> ${linkify(escapeHtml(m.body || ''))}${mediaHtml}<span class="time">${time}</span></div>`;
-            }));
+        const rendered = await Promise.all(fresh.map(m => renderMessageFragment(m, chat)));
         res.send(rendered.join(''));
     } catch (e) {
         console.error('poll error:', e);
@@ -530,26 +534,7 @@ app.get('/chat/:id/older', requireAuth, async (req, res) => {
         const older = messages.filter(m => (m.timestamp || 0) < before).slice(-20);
 
         res.set('Content-Type', 'text/html');
-        const rendered = await Promise.all(older.map(async m => {
-                const name = await messageSenderName(m, chat);
-                const cls = m.fromMe ? 'out' : 'in';
-                const msgId = m.id?._serialized || m.id?.$1;
-                const time = formatTime(m.timestamp);
-                let mediaHtml = '';
-                if (m.hasMedia) {
-                    const mediaUrl = `/media/${encodeURIComponent(msgId)}/${encodeURIComponent(chatIdSerialized)}`;
-                    if (m.type === 'image') {
-                        mediaHtml = `<br><img class="thumb" src="${mediaUrl}?quality=thumb" loading="lazy"><br><a href="${mediaUrl}" target="_blank">View full</a>`;
-                    } else if (m.type === 'ptt' || m.type === 'audio') {
-                        mediaHtml = `<br><audio controls src="${mediaUrl}">Your browser does not support audio playback.</audio><br><a href="${mediaUrl}" target="_blank">View full</a>`;
-                    } else if (m.type === 'video') {
-                        mediaHtml = `<br><a href="${mediaUrl}" target="_blank">View full</a> | <a href="${mediaUrl}?quality=480" target="_blank">480p</a> | <a href="${mediaUrl}?quality=360" target="_blank">360p</a>`;
-                    } else {
-                        mediaHtml = `<br><a href="${mediaUrl}" target="_blank">View attachment${m._data?.mimetype ? ' (' + escapeHtml(m._data.mimetype) + ')' : ''}</a>`;
-                    }
-                }
-                return `<div class="msg ${cls}" data-ts="${m.timestamp}"><b>${name}:</b> ${linkify(escapeHtml(m.body || ''))}${mediaHtml}<span class="time">${time}</span></div>`;
-            }));
+        const rendered = await Promise.all(older.map(m => renderMessageFragment(m, chat)));
         res.send(rendered.join(''));
     } catch (e) {
         console.error('older error:', e);
@@ -581,11 +566,25 @@ app.post('/chat/:id/send', requireAuth, upload.single('media'), async (req, res)
         // clients don't follow transparently, surfacing a false "failed" alert
         // for a message that had already gone out).
         if (req.xhr || req.headers.accept?.includes('application/json')) {
-            const ts = sent?.timestamp || Math.floor(Date.now() / 1000);
-            const time = formatTime(ts);
+            // Render the just-sent message the same way /poll and /older do
+            // (real media markup, not a static "[filename]" placeholder) so it
+            // never needs a later poll to "fix itself". If `sent` came back
+            // without an id (the race above), look the message up fresh -
+            // it's already in WhatsApp's own recent history by this point.
+            let msgToRender = sent;
+            if (!msgToRender || !msgToRender.id) {
+                try {
+                    const recent = await chat.fetchMessages({ limit: 5 });
+                    msgToRender = recent.slice().reverse().find(m => m.fromMe) || msgToRender;
+                } catch (e) { /* fall through to plain fallback below */ }
+            }
+            if (msgToRender && msgToRender.id) {
+                return res.send(await renderMessageFragment(msgToRender, chat));
+            }
+            const ts = Math.floor(Date.now() / 1000);
             const label = text ? linkify(escapeHtml(text)) : (req.file ? `[${escapeHtml(req.file.originalname)}]` : '');
             return res.send(
-                `<div class="msg out" data-ts="${ts}"><b>You:</b> ${label}<span class="time">${time}</span></div>`
+                `<div class="msg out" data-ts="${ts}"><b>You:</b> ${label}<span class="time">${formatTime(ts)}</span></div>`
             );
         }
         res.redirect(`/chat/${req.params.id}?token=${req.cookies.token || ''}`);

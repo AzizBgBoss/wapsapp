@@ -112,9 +112,15 @@ function sendMessage(e) {
     e.preventDefault();
     var input = document.getElementById('textInput');
     var fileInput = document.getElementById('mediaInput');
+    var sendBtn = document.getElementById('sendBtn');
     var text = input.value.trim();
     var file = fileInput && fileInput.files && fileInput.files[0];
     if (!text && !file) return;
+
+    if (file && sendBtn) {
+        sendBtn.disabled = true;
+        sendBtn.value = 'UPLOADING...';
+    }
 
     var xhr = new XMLHttpRequest();
     xhr.open('POST', '/chat/' + pollChatId + '/send', true);
@@ -123,6 +129,10 @@ function sendMessage(e) {
         if (xhr.readyState === 4) {
             input.value = '';
             if (fileInput) fileInput.value = '';
+            if (sendBtn) {
+                sendBtn.disabled = false;
+                sendBtn.value = 'Send';
+            }
             if (xhr.status === 200) {
                 var container = document.getElementById('messages');
                 if (container) {
