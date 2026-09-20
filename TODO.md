@@ -1,0 +1,2 @@
+- Add uploading
+- Fix "view older messages"

@@ -30,7 +30,7 @@
                 <% if (m.hasMedia) { %>
                     <% var mediaUrl = '/media/' + encodeURIComponent(m.id) + '/' + encodeURIComponent(chatId); %>
                     <% if (m.mediaType === 'image') { %>
-                        <br><img class="thumb" src="<%= mediaUrl %>" loading="lazy">
+                        <br><img class="thumb" src="<%= mediaUrl %>?quality=thumb" loading="lazy">
                         <br><a href="<%= mediaUrl %>" target="_blank">View full</a>
                     <% } else if (m.mediaType === 'ptt' || m.mediaType === 'audio') { %>
                         <br><audio controls src="<%= mediaUrl %>">Your browser does not support audio playback.</audio>

@@ -4,6 +4,7 @@ const qrcode = require('qrcode');
 const qrcodeTerminal = require('qrcode-terminal');
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
@@ -219,18 +220,83 @@ function maybeTranscodeToMp3(media, type) {
 }
 
 // Downscales video to a target height (480 or 360) so slower devices/connections
-// can play it. Optional: if ffmpeg is missing, logs once and returns null so the
-// caller falls back to serving the original file.
+// can play it. Written to a real temp file rather than piped to stdout: piping
+// can't seek back to place the moov atom up front, so ffmpeg was forced to use
+// a fragmented MP4 (empty_moov), which old browsers like the BB's can't play at
+// all. A temp file lets us produce a classic faststart MP4 in Baseline/yuv420p,
+// which ancient hardware decoders actually understand. Optional: if ffmpeg is
+// missing, logs once and returns null so the caller falls back to serving the
+// original file.
 function transcodeVideo(inputBuffer, targetHeight) {
     return new Promise(resolve => {
+        const tmpOut = path.join(os.tmpdir(), `wapsapp-${crypto.randomBytes(8).toString('hex')}.mp4`);
+        const cleanup = () => fs.unlink(tmpOut, () => {});
         let ff;
         try {
             ff = spawn('ffmpeg', [
                 '-i', 'pipe:0',
                 '-vf', `scale=-2:${targetHeight}`,
-                '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28',
-                '-c:a', 'aac', '-b:a', '96k',
-                '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov',
+                '-c:v', 'libx264', '-profile:v', 'baseline', '-level', '3.0', '-pix_fmt', 'yuv420p',
+                '-preset', 'veryfast', '-crf', '28',
+                '-c:a', 'aac', '-profile:a', 'aac_low', '-ar', '44100', '-b:a', '96k',
+                '-movflags', '+faststart',
+                '-f', 'mp4',
+                '-y', tmpOut
+            ]);
+        } catch (e) {
+            if (!ffmpegMissingLogged) {
+                console.log('[transcode] ffmpeg not found, cannot transcode media, displaying media as is');
+                ffmpegMissingLogged = true;
+            }
+            return resolve(null);
+        }
+
+        let settled = false;
+        ff.stderr.on('data', () => {});
+        ff.on('error', (e) => {
+            if (settled) return;
+            settled = true;
+            if (e.code === 'ENOENT' && !ffmpegMissingLogged) {
+                console.log('[transcode] ffmpeg not found, cannot transcode media, displaying media as is');
+                ffmpegMissingLogged = true;
+            } else {
+                console.log('[transcode] ffmpeg error, displaying media as is:', e.message);
+            }
+            cleanup();
+            resolve(null);
+        });
+        ff.on('close', code => {
+            if (settled) return;
+            settled = true;
+            if (code === 0 && fs.existsSync(tmpOut)) {
+                fs.readFile(tmpOut, (err, buf) => {
+                    cleanup();
+                    resolve(err ? null : buf);
+                });
+            } else {
+                console.log('[transcode] ffmpeg exited with code', code, '- displaying media as is');
+                cleanup();
+                resolve(null);
+            }
+        });
+        ff.stdin.write(inputBuffer);
+        ff.stdin.end();
+    });
+}
+
+// Downscales a JPEG/PNG image to a small, low-quality preview so slow/old
+// devices (like the BB) aren't stuck downloading full-res photos just to
+// show a thumbnail. Same optional-ffmpeg pattern as the other transcoders:
+// if ffmpeg is missing, resolves null and the caller falls back to the original.
+function transcodeImageThumb(inputBuffer) {
+    return new Promise(resolve => {
+        let ff;
+        try {
+            ff = spawn('ffmpeg', [
+                '-i', 'pipe:0',
+                '-vf', 'scale=-1:240',
+                '-q:v', '12',
+                '-f', 'mjpeg',
                 'pipe:1'
             ]);
         } catch (e) {
@@ -384,7 +450,7 @@ app.get('/chat/:id', requireAuth, async (req, res) => {
 
     try {
         const chat = await wa.getChatById(req.params.id);
-        const messages = await chat.fetchMessages({ limit: 30 });
+        const messages = await chat.fetchMessages({ limit: 10 });
         const avatar = await getAvatarUrl(req.params.id);
 
         const view = await Promise.all(messages.map(async m => ({
@@ -431,7 +497,7 @@ app.get('/chat/:id/poll', requireAuth, async (req, res) => {
                 if (m.hasMedia) {
                     const mediaUrl = `/media/${encodeURIComponent(msgId)}/${encodeURIComponent(chatIdSerialized)}`;
                     if (m.type === 'image') {
-                        mediaHtml = `<br><img class="thumb" src="${mediaUrl}" loading="lazy"><br><a href="${mediaUrl}" target="_blank">View full</a>`;
+                        mediaHtml = `<br><img class="thumb" src="${mediaUrl}?quality=thumb" loading="lazy"><br><a href="${mediaUrl}" target="_blank">View full</a>`;
                     } else if (m.type === 'ptt' || m.type === 'audio') {
                         mediaHtml = `<br><audio controls src="${mediaUrl}">Your browser does not support audio playback.</audio><br><a href="${mediaUrl}" target="_blank">View full</a>`;
                     } else if (m.type === 'video') {
@@ -468,7 +534,7 @@ app.get('/chat/:id/older', requireAuth, async (req, res) => {
                 if (m.hasMedia) {
                     const mediaUrl = `/media/${encodeURIComponent(msgId)}/${encodeURIComponent(chatIdSerialized)}`;
                     if (m.type === 'image') {
-                        mediaHtml = `<br><img class="thumb" src="${mediaUrl}" loading="lazy"><br><a href="${mediaUrl}" target="_blank">View full</a>`;
+                        mediaHtml = `<br><img class="thumb" src="${mediaUrl}?quality=thumb" loading="lazy"><br><a href="${mediaUrl}" target="_blank">View full</a>`;
                     } else if (m.type === 'ptt' || m.type === 'audio') {
                         mediaHtml = `<br><audio controls src="${mediaUrl}">Your browser does not support audio playback.</audio><br><a href="${mediaUrl}" target="_blank">View full</a>`;
                     } else if (m.type === 'video') {
@@ -548,7 +614,7 @@ app.get('/chat/:id/about', requireAuth, async (req, res) => {
         } else {
             try {
                 const contact = await wa.getContactById(req.params.id);
-                number = contact?.number || chat.id?.user || null;
+                number = (await contact.getFormattedNumber()) || contact?.number || chat.id?.user || null;
             } catch (e) {
                 number = chat.id?.user || null;
             }
@@ -593,7 +659,7 @@ app.get('/chat/:id/who', requireAuth, async (req, res) => {
 
 app.get('/media/:msgId/:chatId', requireAuth, async (req, res) => {
     try {
-        const quality = ['480', '360'].includes(req.query.quality) ? req.query.quality : null;
+        const quality = ['480', '360', 'thumb'].includes(req.query.quality) ? req.query.quality : null;
         const { data: dataPath, meta: metaPath } = mediaCachePaths(req.params.msgId, quality);
 
         if (fs.existsSync(dataPath) && fs.existsSync(metaPath)) {
@@ -691,7 +757,13 @@ app.get('/media/:msgId/:chatId', requireAuth, async (req, res) => {
             return res.status(410).send(`Media not available yet (type: ${raw.type || 'unknown'}, mimetype: ${raw.mimetype || 'unknown'}). Open WhatsApp on your phone and view this media there once, then try again here.`);
         }
         media = await maybeTranscodeToMp3(media, raw.type);
-        if (quality && (raw.type === 'video' || (media.mimetype || '').startsWith('video'))) {
+        if (quality === 'thumb' && (raw.type === 'image' || (media.mimetype || '').startsWith('image'))) {
+            const originalBuffer = Buffer.from(media.data, 'base64');
+            const thumbBuffer = await transcodeImageThumb(originalBuffer);
+            if (thumbBuffer) {
+                media = { data: thumbBuffer.toString('base64'), mimetype: 'image/jpeg' };
+            } // else: ffmpeg missing/failed, fall through and serve original quality
+        } else if (quality && (raw.type === 'video' || (media.mimetype || '').startsWith('video'))) {
             const originalBuffer = Buffer.from(media.data, 'base64');
             const scaledBuffer = await transcodeVideo(originalBuffer, quality);
             if (scaledBuffer) {
