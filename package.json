@@ -4,8 +4,7 @@
   "private": true,
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "postinstall": "node scripts/patch-wwebjs.js"
+    "postinstall": "patch-package"
   },
   "dependencies": {
     "ejs": "^3.1.10",
