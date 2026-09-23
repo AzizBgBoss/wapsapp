@@ -398,6 +398,11 @@ app.use(express.static(__dirname + '/public', { maxAge: '1d' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser);
 
+app.get('/image.png', (req, res) => {
+    res.set('Cache-Control', 'public, max-age=31536000, immutable');
+    res.sendFile(path.join(__dirname, 'image.png'));
+});
+
 // ---- auth / setup pages ----
 
 app.get('/token', (req, res) => {
